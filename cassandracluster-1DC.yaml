@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cassandra-cm-shenandoah
+data:
+  jvm.options: |
+    # enable thread priorities, primarily so we can give periodic tasks
+    # a lower priority to avoid interfering with client workload
+    -XX:+UseThreadPriorities
+
+    # allows lowering thread priority without being root on linux - probably
+    # not necessary on Windows but doesn't harm anything.
+    # see http://tech.stolsvik.com/2010/01/linux-java-thread-priorities-workar
+    -XX:ThreadPriorityPolicy=42
+
+    # Enable heap-dump if there's an OOM
+    -XX:+HeapDumpOnOutOfMemoryError
+
+    # Per-thread stack size.
+    -Xss256k
+
+    # Larger interned string table, for gossip's benefit (CASSANDRA-6410)
+    -XX:StringTableSize=1000003
+
+    # Make sure all memory is faulted and zeroed on startup.
+    # This helps prevent soft faults in containers and makes
+    # transparent hugepage allocation more effective.
+    -XX:+AlwaysPreTouch
+
+    # Disable biased locking as it does not benefit Cassandra.
+    -XX:-UseBiasedLocking
+
+    # Enable thread-local allocation blocks and allow the JVM to automatically
+    # resize them at runtime.
+    -XX:+UseTLAB
+    -XX:+ResizeTLAB
+
+    # http://www.evanjones.ca/jvm-mmap-pause.html
+    # Prevent Jolokia from working see https://jira.apache.org/jira/browse/CASSANDRA-9483
+    #-XX:+PerfDisableSharedMem
+
+    # Prefer binding to IPv4 network intefaces (when net.ipv6.bindv6only=1). See
+    # http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6342561 (short version:
+    # comment out this entry to enable IPv6 support).
+    -Djava.net.preferIPv4Stack=true
+
+    # Heap size is automatically calculated by cassandra-env based on this
+    # formula: max(min(1/2 ram, 1024MB), min(1/4 ram, 8GB))
+    # That is:
+    # - calculate 1/2 ram and cap to 1024MB
+    # - calculate 1/4 ram and cap to 8192MB
+    # - pick the max
+    #
+    # For production use you may wish to adjust this for your environment.
+    # If that's the case, uncomment the -Xmx and Xms options below to override the
+    # automatic calculation of JVM heap memory.
+    #
+    # It is recommended to set min (-Xms) and max (-Xmx) heap sizes to
+    # the same value to avoid stop-the-world GC pauses during resize, and
+    # so that we can lock the heap in memory on startup to prevent any
+    # of it from being swapped out.
+    #-Xms4G
+    #-Xmx4G
+
+    # Young generation size is automatically calculated by cassandra-env
+    # based on this formula: min(100 * num_cores, 1/4 * heap size)
+    #
+    # The main trade-off for the young generation is that the larger it
+    # is, the longer GC pause times will be. The shorter it is, the more
+    # expensive GC will be (usually).
+    #
+    # It is not recommended to set the young generation size if using the
+    # G1 GC, since that will override the target pause-time goal.
+    # More info: http://www.oracle.com/technetwork/articles/java/g1gc-1984535.html
+    #
+    # The example below assumes a modern 8-core+ machine for decent
+    # times. If in doubt, and if you do not particularly want to tweak, go
+    # 100 MB per physical CPU core.
+    #-Xmn800M
+
+    -XX:+UseShenandoahGC
+
+    -XX:+PrintGCDetails
+    -XX:+PrintGCDateStamps
+    -XX:+PrintHeapAtGC
+    -XX:+PrintTenuringDistribution
+    -XX:+PrintGCApplicationStoppedTime
+    -XX:+PrintPromotionFailure
+    #-XX:PrintFLSStatistics=1
+    #-Xloggc:/var/log/cassandra/gc.log
+    #-XX:+UseGCLogFileRotation
+    #-XX:NumberOfGCLogFiles=10
+    #-XX:GCLogFileSize=10M
+
+    # Debug
+    -XX:+PrintCommandLineFlags
+---
+apiVersion: "db.orange.com/v1alpha1"
+kind: "CassandraCluster"
+metadata:
+  name: cassandra-e2e
+  labels:
+    cluster: k8s.pic
+spec:
+  nodesPerRacks: 2
+  cassandraImage: cscetbon/cassandra:3.11-openjdk-shenandoah-8
+  configMapName: cassandra-cm-shenandoah
+  dataCapacity: "1Gi"
+  hardAntiAffinity: false
+  deletePVC: false
+  autoPilot: true
+  autoUpdateSeedList: false
+  resources:
+    requests: &requests
+      cpu: 500m
+      memory: 768Mi
+    limits: *requests
+  topology:
+    dc:
+      - name: dc1
+        rack:
+          - name: rack1
+
